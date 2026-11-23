@@ -70,6 +70,7 @@ export class EkasaneRenderer {
     this._decodedPool = new Map(); // hash -> ImageBitmap
     this._fonts = new Map(); // nsKey -> Map<id, { usedFamily, source }>
     this._importedFonts = new Map(); // "name|weight|style" -> FontFace
+    this._scratch = null; // line-highlight の feather 用オフスクリーン canvas
   }
 
   _nsKey() {
@@ -863,17 +864,113 @@ export class EkasaneRenderer {
         return;
     }
     const fillColor = validColor(obj["fill-color"], "#00000000");
-    if (!fillColor.endsWith("00")) {
+    const willFill = !fillColor.endsWith("00");
+    const borderWidth = obj["border-width"] === undefined ? 3 : Number(obj["border-width"]);
+    const willStroke = Number.isFinite(borderWidth) && borderWidth > 0;
+    // shadow は最初の描画パスにだけ付ける（fill と stroke の両方に付けると影が二重になる）
+    let shadowPending = true;
+    if (willFill) {
+      if (shadowPending) { this._applyShadow(ctx, obj); shadowPending = false; }
       ctx.fillStyle = fillColor;
       ctx.fill();
+      this._clearShadow(ctx);
     }
-    const borderWidth = obj["border-width"] === undefined ? 3 : Number(obj["border-width"]);
-    if (Number.isFinite(borderWidth) && borderWidth > 0) {
+    if (willStroke) {
+      if (shadowPending) { this._applyShadow(ctx, obj); shadowPending = false; }
       ctx.strokeStyle = validColor(obj["border-color"], "#000000FF");
       ctx.lineWidth = borderWidth;
       ctx.stroke();
+      this._clearShadow(ctx);
     }
     ctx.restore();
+  }
+
+  // stroke（縁取り）の実効値を返す。キーが無い・width が 0 以下なら null（装飾なし）
+  _strokeOf(obj) {
+    const st = obj.stroke;
+    if (!st || typeof st !== "object") return null;
+    const w = Number(st.width);
+    if (Number.isFinite(w) && w <= 0) return null;
+    return {
+      color: validColor(st.color, DEFAULT_FONT_COLOR),
+      width: Number.isFinite(w) ? w : 1,
+    };
+  }
+
+  // shadow（影）を ctx に設定する。キーが無ければ何もしない
+  _applyShadow(ctx, obj) {
+    const sh = obj.shadow;
+    if (!sh || typeof sh !== "object") return;
+    const off = Array.isArray(sh.offset) ? sh.offset : [0, 0];
+    ctx.shadowColor = validColor(sh.color, DEFAULT_FONT_COLOR);
+    const blur = Number(sh.blur);
+    ctx.shadowBlur = Number.isFinite(blur) && blur > 0 ? blur : 0;
+    ctx.shadowOffsetX = Number(off[0]) || 0;
+    ctx.shadowOffsetY = Number(off[1]) || 0;
+  }
+
+  // shadow の設定を解除する（後続の描画へ漏らさない）
+  _clearShadow(ctx) {
+    ctx.shadowColor = "rgba(0, 0, 0, 0)";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+  }
+
+  // line-highlight（行の座布団）の実効値を返す。キーが無い・形が不正なら null
+  _lineHighlightOf(obj) {
+    const hl = obj["line-highlight"];
+    if (!hl || typeof hl !== "object") return null;
+    const pad = Array.isArray(hl.padding) ? hl.padding : [0, 0];
+    const radius = Number(hl.radius);
+    const feather = Number(hl.feather);
+    return {
+      color: validColor(hl.color, DEFAULT_FONT_COLOR),
+      padX: Number(pad[0]) || 0,
+      padY: Number(pad[1]) || 0,
+      radius: Number.isFinite(radius) && radius > 0 ? radius : 0,
+      feather: Number.isFinite(feather) && feather > 0 ? feather : 0,
+      underLayer: hl["under-layer"] !== false,
+    };
+  }
+
+  // 座布団の帯を1行分描く。(x, y, w, h) は文字の描画範囲（左上と幅・高さ）。padding はこの範囲へ効かせる
+  _drawLineHighlight(ctx, hl, x, y, w, h) {
+    if (hl.color.endsWith("00")) return; // 完全透明なら描かない
+    const bx = x - hl.padX;
+    const by = y - hl.padY;
+    const bw = w + hl.padX * 2;
+    const bh = h + hl.padY * 2;
+    if (!(bw > 0) || !(bh > 0)) return;
+    const r = Math.min(hl.radius, bw / 2, bh / 2);
+    const pathBand = (c, ox, oy) => {
+      c.beginPath();
+      if (typeof c.roundRect === "function") c.roundRect(ox, oy, bw, bh, r);
+      else c.rect(ox, oy, bw, bh);
+    };
+    if (hl.feather > 0) {
+      // 縁のぼかし：帯だけをオフスクリーンへ描き、blur を掛けてから本キャンバスへ重ねる
+      const m = Math.ceil(hl.feather * 2);
+      if (!this._scratch) this._scratch = document.createElement("canvas");
+      const off = this._scratch;
+      off.width = Math.max(1, Math.ceil(bw + m * 2));
+      off.height = Math.max(1, Math.ceil(bh + m * 2));
+      const octx = off.getContext("2d");
+      octx.clearRect(0, 0, off.width, off.height);
+      pathBand(octx, m, m);
+      octx.fillStyle = hl.color;
+      octx.fill();
+      ctx.save();
+      try {
+        ctx.filter = `blur(${hl.feather}px)`;
+      } catch (e) { /* filter 未対応の環境では、そのまま重ねる */ }
+      ctx.drawImage(off, bx - m, by - m);
+      ctx.restore();
+    } else {
+      pathBand(ctx, bx, by);
+      ctx.fillStyle = hl.color;
+      ctx.fill();
+    }
   }
 
   _fontString(style) {
@@ -993,6 +1090,11 @@ export class EkasaneRenderer {
       if (hasLH) return specifiedLH;
       return line.reduce((m, s) => Math.max(m, s.style.size), base.size);
     });
+    // 行内の一番大きいランの size（座布団の縦の土台に使う。ランが無い行は font 定義の size）
+    const lineMaxSizes = lines.map((line) => {
+      const mx = line.reduce((m, s) => Math.max(m, s.style.size), 0);
+      return mx > 0 ? mx : base.size;
+    });
     const blockHeight = lineHeights.reduce((a, b) => a + b, 0);
 
     // align / vertical-align は text と numeric（format 適用後の文字列）に効く
@@ -1006,6 +1108,10 @@ export class EkasaneRenderer {
       else if (valignValue === "bottom") cy += geom.h - blockHeight;
     }
 
+    const stroke = this._strokeOf(obj);
+    // line-highlight は text のみ（numeric には付けない）
+    const hl = obj.type === "text" ? this._lineHighlightOf(obj) : null;
+
     ctx.save();
     ctx.textBaseline = "top";
     for (let li = 0; li < lines.length; li++) {
@@ -1016,12 +1122,39 @@ export class EkasaneRenderer {
         if (alignValue === "center") cx += (geom.w - lineWidths[li]) / 2;
         else if (alignValue === "right") cx += geom.w - lineWidths[li];
       }
+      const lineStartX = cx;
+      // 座布団の縦の土台は「描画される文字の範囲」：下端＝行の箱の下端、上端＝そこから最大ラン size 分を遡る
+      const bandTop = cy + lineHeights[li] - lineMaxSizes[li];
+      // 座布団（under-layer のとき）：文字とその影より先に敷く
+      if (hl !== null && hl.underLayer) {
+        this._drawLineHighlight(ctx, hl, lineStartX, bandTop, lineWidths[li], lineMaxSizes[li]);
+      }
       for (const seg of line) {
         if (seg.text === "") continue;
         ctx.font = this._fontString(seg.style);
-        ctx.fillStyle = validColor(seg.style.color, DEFAULT_FONT_COLOR);
-        ctx.fillText(seg.text, cx, cy);
+        // ランは行の箱の下端に揃える（textBaseline は "top" なので、自分の size 分を引いて置く）
+        const segY = cy + lineHeights[li] - seg.style.size;
+        if (stroke !== null) {
+          // 縁取りを先に描き、その上から塗る。shadow は縁取りのパスにだけ付ける（両方だと二重になる）
+          this._applyShadow(ctx, obj);
+          ctx.strokeStyle = stroke.color;
+          ctx.lineWidth = stroke.width;
+          ctx.lineJoin = "round";
+          ctx.strokeText(seg.text, cx, segY);
+          this._clearShadow(ctx);
+          ctx.fillStyle = validColor(seg.style.color, DEFAULT_FONT_COLOR);
+          ctx.fillText(seg.text, cx, segY);
+        } else {
+          this._applyShadow(ctx, obj);
+          ctx.fillStyle = validColor(seg.style.color, DEFAULT_FONT_COLOR);
+          ctx.fillText(seg.text, cx, segY);
+          this._clearShadow(ctx);
+        }
         cx += ctx.measureText(seg.text).width;
+      }
+      // 座布団（under-layer でないとき）：その行の glyph を描いた後に被せる
+      if (hl !== null && !hl.underLayer) {
+        this._drawLineHighlight(ctx, hl, lineStartX, bandTop, lineWidths[li], lineMaxSizes[li]);
       }
       cy += lineHeights[li];
     }

@@ -145,6 +145,7 @@
           "input"
         ]
       },
+      "コメントアウトstroke": {"color": "#FFFFFF88", "width": 1},
       "height": 136,
       "width": 928,
       "line-height": "68",
@@ -165,6 +166,7 @@
           "input"
         ]
       },
+      "コメントアウトshadow": { "color": "#0000DD88", "blur": 1, "offset": [1, 1] },
       "width": 928,
       "line-height": "68",
       "x": 700,

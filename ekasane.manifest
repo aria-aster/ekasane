@@ -13,12 +13,16 @@
   ],
   "list": [
     {
-      "name": "anas1 1922x1082",
+      "name": "謳Ctop 1922x1082",
       "folder": "anas1"
     },
     {
-      "name": "anas2 1276x716",
+      "name": "謳Ctop 1276x716",
       "folder": "anas2"
+    },
+    {
+      "name": "謳Page 1922x1082",
+      "folder": "anas3"
     }
   ]
 }

@@ -1,0 +1,153 @@
+{
+  "common": {
+    "author": "ekasane.a2",
+    "height": 1080,
+    "id": "anas-v2",
+    "output": {
+      "name": "anas-v1.png",
+      "type": "image/png"
+    },
+    "title": "謳-v1",
+    "version": "1.0.0",
+    "width": 1920,
+    "input-order": "ascending"
+  },
+  "font": [
+    {
+      "family": [
+        "Zen Maru Gothic",
+        "メイリオ",
+        "M PLUS Rounded 1c",
+        "sans-serif"
+      ],
+      "id": "uta_white",
+      "color": "#FCF3E6FF",
+      "size": 42,
+      "weight": 400
+    },
+    {
+      "family": [
+        "Zen Maru Gothic",
+        "メイリオ",
+        "M PLUS Rounded 1c",
+        "sans-serif"
+      ],
+      "id": "uta_red",
+      "color": "#AC4D3DFF",
+      "size": 42,
+      "weight": 400
+    },
+    {
+      "family": [
+        "Zen Maru Gothic",
+        "メイリオ",
+        "M PLUS Rounded 1c",
+        "sans-serif"
+      ],
+      "id": "rubi_white",
+      "color": "#B8D2D8FF",
+      "size": 12,
+      "weight": 500
+    },
+    {
+      "family": [
+        "Zen Maru Gothic",
+        "メイリオ",
+        "M PLUS Rounded 1c",
+        "sans-serif"
+      ],
+      "id": "rubi_red",
+      "color": "#000000FF",
+      "size": 12,
+      "weight": 500
+    }
+  ],
+  "material": [
+    {
+      "id": "book_y_base",
+      "label": "謳（黄ベース）",
+      "material-type": "image",
+      "path": "book_y_bese.png"
+    },
+    {
+      "id": "book_b_base",
+      "label": "謳（青ベース）",
+      "material-type": "image",
+      "path": "book_b_bese.png"
+    },
+    {
+      "id": "book_c_base",
+      "label": "謳（彩ベース）",
+      "material-type": "image",
+      "path": "book_c_bese.png"
+    },
+    {
+      "id": "book_d_base",
+      "label": "謳（獣ベース）",
+      "material-type": "image",
+      "path": "book_d_bese.png"
+    }
+  ],
+  "object": [
+    {
+      "crop": "center",
+      "height": 1082,
+      "id": "utaNo",
+      "label": "モード選択（黄、青、彩）",
+      "material-id": "book_y_base",
+      "type": "image",
+      "value": {
+        "function": [
+          "input", false, "book_y_base", "book_b_base", "book_c_base", "book_d_base"
+        ]
+      },
+      "width": 1922,
+      "x": 0,
+      "y": 0,
+      "z": 4
+    },
+    {
+      "font": "uta_white",
+      "id": "utatext1",
+      "label": "謳テキスト（左ページ）",
+      "max-length": 1000,
+      "multiline": true,
+      "type": "text",
+      "value": { "function": [ "input" ] },
+      "height": 900,
+      "width": 830,
+      "line-height": 64,
+      "align": "center",
+      "vertical-align": "middle",
+      "color": "#AC4D3DFF",
+      "stroke": {"color": "#00000080", "width": 3},
+      "shadow": { "color": "#000000AA", "blur": 6, "offset": [1, 1] },
+      "line-highlight": { "color":"#00000060", "padding": [0, -14], "radius": 12, "feather": 10, "under-layer":true },
+      "x": 150,
+      "y": 60,
+      "z": 11
+    },
+    {
+      "font": "uta_white",
+      "id": "utatext2",
+      "label": "謳テキスト（右ページ）",
+      "max-length": 1000,
+      "multiline": true,
+      "type": "text",
+      "value": { "function": [ "input" ] },
+      "height": 900,
+      "width": 830,
+      "line-height": 64,
+      "align": "center",
+      "vertical-align": "middle",
+      "color": "#AC4D3DFF",
+      "stroke": {"color": "#00000080", "width": 3},
+      "shadow": { "color": "#000000A0", "blur": 6, "offset": [1, 1] },
+      "line-highlight": { "color":"#00000060", "padding": [0, -14], "radius": 12, "feather": 10, "under-layer":true },
+      "x": 940,
+      "y": 60,
+      "z": 12
+    }
+  ]
+}
+

@@ -48,6 +48,12 @@ const els = {
   warningArea: $("warningArea"),
   packageFileInput: $("packageFileInput"),
   loadStatus: $("loadStatus"), loadStatusText: $("loadStatusText"),
+  editorBackdrop: $("editorBackdrop"), editorTitle: $("editorTitle"), editorArea: $("editorArea"),
+  editorError: $("editorError"), editorOk: $("editorOk"), editorCancel: $("editorCancel"),
+  edFontSet: $("edFontSet"), edWeight: $("edWeight"), edItalic: $("edItalic"),
+  edSize: $("edSize"), edSizeClear: $("edSizeClear"), edFontList: $("edFontList"),
+  edColor: $("edColor"), edAlpha: $("edAlpha"), edAlphaVal: $("edAlphaVal"), edColorClear: $("edColorClear"),
+  edLocalFont: $("edLocalFont"),
   dialogBackdrop: $("dialogBackdrop"), dialogTitle: $("dialogTitle"), dialogBody: $("dialogBody"),
   dialogOk: $("dialogOk"), dialogCancel: $("dialogCancel"),
 };
@@ -354,6 +360,8 @@ async function openPackageFromServer(manifestText) {
   showLoadStatus("パッケージを読み込んでいます…");
   try {
     await setPackage(manifest, makeServerEntries());
+  } catch (e) {
+    showError(e.code || "PACKAGE_LOAD_FAILED", errMessage(e));
   } finally {
     hideLoadStatus();
   }
@@ -668,12 +676,17 @@ function buildInputFields() {
 function fieldShell(spec) {
   const div = document.createElement("div");
   div.className = "field";
+  const head = document.createElement("div");
+  head.className = "field-head";
   const label = document.createElement("label");
   label.textContent = spec.label;
+  const actions = document.createElement("span");
+  actions.className = "field-actions";
+  head.append(label, actions);
   const err = document.createElement("div");
   err.className = "ferr";
-  div.append(label);
-  return { div, err };
+  div.append(head);
+  return { div, err, actions };
 }
 
 function setFieldError(objectId, message) {
@@ -682,7 +695,7 @@ function setFieldError(objectId, message) {
 }
 
 function buildField(spec) {
-  const { div, err } = fieldShell(spec);
+  const { div, err, actions } = fieldShell(spec);
   const def = spec.def;
   const current = G.values.get(spec.objectId);
 
@@ -694,7 +707,7 @@ function buildField(spec) {
   const onSetOk = () => setFieldError(spec.objectId, "");
 
   if (spec.type === "text" && !spec.candidates) {
-    div.append(buildRichTextField(spec, err, onSetOk));
+    div.append(buildTextField(spec, err, onSetOk, actions));
   } else if (spec.type === "text" || spec.type === "numeric") {
     if (spec.candidates) {
       const control = document.createElement("select");
@@ -1297,14 +1310,19 @@ async function clearCache() {
   // 開いているパッケージとテンプレートで、登録をやり直す
   G.renderer.initPackage(G.packageId);
   setWarnings([]);
-  await prepareTemplate();
-  for (const [objectId, blob] of G.userImages) {
-    const runtimeId = G.ekasane.issueRuntimeId(objectId);
-    try {
-      await withTimeout(G.renderer.registerMaterial(runtimeId, blob), REGISTER_TIMEOUT_MS);
-    } catch (e) {
-      addWarning({ scope: "object", objectId, code: e.code, message: `持ち込み画像の再登録に失敗しました（${errMessage(e)}）` });
+  try {
+    await prepareTemplate();
+    for (const [objectId, blob] of G.userImages) {
+      const runtimeId = G.ekasane.issueRuntimeId(objectId);
+      try {
+        await withTimeout(G.renderer.registerMaterial(runtimeId, blob), REGISTER_TIMEOUT_MS);
+      } catch (e) {
+        addWarning({ scope: "object", objectId, code: e.code, message: `持ち込み画像の再登録に失敗しました（${errMessage(e)}）` });
+      }
     }
+  } catch (e) {
+    showError(e.code || "TEMPLATE_LOAD_FAILED", errMessage(e));
+    return;
   }
   renderWarnings();
 }
@@ -1385,17 +1403,17 @@ els.outputBtn.addEventListener("click", () => { void doFinalOutput(); });
 async function initGenerator() {
   G.renderer = new EkasaneRenderer();
   updateControls();
+  // フォールバック（ファイルモード）は「manifest が無い／取得できない」場合だけ。
+  // 取得できた後のパースエラーや id 無しは、読み込みエラーとして表示する
+  let text = null;
   try {
     const res = await fetch("ekasane.manifest", { cache: "no-store" });
-    if (res.ok) {
-      const text = await res.text();
-      const manifest = JSON.parse(text);
-      if (manifest && manifest.id) {
-        await openPackageFromServer(text);
-        return;
-      }
-    }
-  } catch { /* 取れなければファイルモード */ }
+    if (res.ok) text = await res.text();
+  } catch { /* 取得できなければファイルモード */ }
+  if (text !== null) {
+    await openPackageFromServer(text);
+    return;
+  }
   G.mode = "file";
   G.screenState = "no-package";
   updateControls();
@@ -1403,8 +1421,8 @@ async function initGenerator() {
 
 void initGenerator();
 
-// ---------------------------------------------------------------- リッチテキストエディタ（text 自由入力用）
-// 内部モデルはラン配列。編集エリア（contenteditable）の span に属性を写し、
+// ---------------------------------------------------------------- テキストのラン配列ユーティリティ
+// 内部モデルはラン配列。表示・編集エリア（contenteditable）の span に属性を写し、
 // 取り出すときにランへ戻す。改行はエリア内では "\n" の文字として保持し、
 // ラン変換時に「直前のランの newline: true」へ直す。
 const RUN_ATTR_KEYS = ["weight", "italic", "color", "size", "family", "set"];
@@ -1446,36 +1464,45 @@ function renderRuns(area, runs) {
   for (const run of runs) {
     const span = document.createElement("span");
     span.dataset.attrs = JSON.stringify(pickRunAttrs(run));
-    // フォントセット（set）があれば、その定義の見た目を下地にする（表示は近似）
+    // 実効スタイルで描く：set があれば、その定義にある属性（family／size／weight／color）が
+    // ランの個別属性より優先する（フォーマット仕様・レンダラーと同じ解決。表示は近似）
+    const eff = { weight: run.weight, italic: run.italic, color: run.color, size: run.size, family: run.family };
     if (run.set && G.ekasane && G.ekasane.font) {
       const defId = String(run.set).replace(/^ekasane\.font\./, "");
       const fdef = G.ekasane.font.get(defId);
       if (fdef) {
-        if (fdef.weight) span.style.fontWeight = String(fdef.weight);
-        if (fdef.size) span.style.fontSize = `${Math.max(11, Math.round(fdef.size * 0.4))}px`;
-        if (Array.isArray(fdef.family) && fdef.family.length > 0) span.style.fontFamily = fdef.family.join(",");
+        if (Array.isArray(fdef.family) && fdef.family.length > 0) eff.family = fdef.family;
+        if (fdef.size !== undefined && fdef.size !== null) eff.size = fdef.size;
+        if (fdef.weight !== undefined && fdef.weight !== null) eff.weight = fdef.weight;
+        if (typeof fdef.color === "string") eff.color = fdef.color;
       }
     }
-    if (run.weight) span.style.fontWeight = String(run.weight);
-    if (run.italic) span.style.fontStyle = "italic";
-    if (run.color) span.style.color = run.color;
-    if (run.size) span.style.fontSize = `${Math.max(11, Math.round(run.size * 0.4))}px`;
+    if (eff.weight) span.style.fontWeight = String(eff.weight);
+    if (eff.italic) span.style.fontStyle = "italic";
+    if (eff.color) span.style.color = eff.color;
+    if (eff.family) span.style.fontFamily = (Array.isArray(eff.family) ? eff.family : [eff.family]).join(",");
+    if (eff.size) span.style.fontSize = `${Math.max(11, Math.round(eff.size * 0.4))}px`;
     span.textContent = (run.text || "") + (run.newline ? "\n" : "");
     area.appendChild(span);
   }
 }
 
 function extractRuns(area) {
+  if (area.textContent === "") return [];
   const runs = [];
-  const markNewline = () => {
+  // 行の終わり：直前のランがまだ行の途中なら、そこに newline を付ける。
+  // 既に改行済み（またはランがまだ無い）なら、空行として newline を持つ空のランを置く
+  // （空行を落とすと、続けて改行した行が消えてしまう）
+  const breakLine = (attrs) => {
     const last = runs[runs.length - 1];
-    if (last) last.newline = true;
+    if (last && !last.newline) last.newline = true;
+    else runs.push({ text: "", ...attrs, newline: true });
   };
   const pushText = (text, attrs) => {
     const parts = text.split("\n");
     parts.forEach((part, i) => {
       if (part !== "") runs.push({ text: part, ...attrs });
-      if (i < parts.length - 1) markNewline();
+      if (i < parts.length - 1) breakLine(attrs);
     });
   };
   const walk = (node, attrs) => {
@@ -1483,10 +1510,10 @@ function extractRuns(area) {
       if (child.nodeType === 3) {
         pushText(child.textContent, attrs);
       } else if (child.nodeType === 1) {
-        if (child.tagName === "BR") { markNewline(); continue; }
+        if (child.tagName === "BR") { breakLine(attrs); continue; }
         let a = attrs;
         try { a = { ...attrs, ...JSON.parse(child.dataset.attrs || "{}") }; } catch { /* データ属性が無ければ継承 */ }
-        if ((child.tagName === "DIV" || child.tagName === "P") && runs.length > 0) markNewline();
+        if ((child.tagName === "DIV" || child.tagName === "P") && runs.length > 0) breakLine(a);
         walk(child, a);
       }
     }
@@ -1495,145 +1522,433 @@ function extractRuns(area) {
   return normalizeRuns(runs);
 }
 
-function buildRichTextField(spec, err, onSetOk) {
+// ---------------------------------------------------------------- テキスト自由入力欄（プレーン／リッチのモード制）
+// モードは保存データには持たせず、欄を組み立てる時点で値から判定する：
+// 装飾（set／weight／italic／color／size／family のいずれか）を含むラン配列ならリッチ形式、
+// そうでなければプレーン形式で開く。
+function valueHasDecoration(v) {
+  if (!Array.isArray(v)) return false;
+  return v.some((r) => r && RUN_ATTR_KEYS.some((k) => r[k] !== undefined));
+}
+
+function plainTextOfValue(v) {
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return v.map((r) => (r.text || "") + (r.newline ? "\n" : "")).join("");
+  return "";
+}
+
+function runsFromPlainText(text) {
+  const lines = String(text).split("\n");
+  const runs = [];
+  lines.forEach((line, i) => {
+    const run = { text: line };
+    if (i < lines.length - 1) run.newline = true;
+    runs.push(run);
+  });
+  return normalizeRuns(runs);
+}
+
+function buildTextField(spec, err, onSetOk, actions) {
   const def = spec.def;
   const wrap = document.createElement("div");
-  wrap.className = "rich";
+  let mode = valueHasDecoration(G.values.get(spec.objectId)) ? "rich" : "plain";
+  let refreshControl = () => {};
 
-  // ツールバー：フォントセット（ekasane.font の定義）の選択リスト。
-  // 選んだセットはテキスト本文全体のランに set として適用する（2026-11-21 本人の整理）
-  const toolbar = document.createElement("div");
-  toolbar.className = "rich-toolbar";
-  const fsLabel = document.createElement("span");
-  fsLabel.className = "rich-label";
-  fsLabel.textContent = "フォントセット";
-  const fsSel = document.createElement("select");
-  fsSel.className = "fontset";
-  const noneOpt = document.createElement("option");
-  noneOpt.value = "";
-  noneOpt.textContent = "（なし）";
-  fsSel.appendChild(noneOpt);
-  const mixedOpt = document.createElement("option");
-  mixedOpt.value = "__mixed__";
-  mixedOpt.textContent = "（混在）";
-  mixedOpt.disabled = true;
-  mixedOpt.hidden = true;
-  fsSel.appendChild(mixedOpt);
-  for (const [fid] of (G.ekasane.font || [])) {
-    const opt = document.createElement("option");
-    opt.value = fid;
-    opt.textContent = fid;
-    fsSel.appendChild(opt);
-  }
-  toolbar.append(fsLabel, fsSel);
-
-  const area = document.createElement("div");
-  area.className = "rich-area" + (def.multiline ? " multiline" : "");
-  area.contentEditable = "true";
-  area.spellcheck = false;
-
-  let commitTimer = null;
-
-  // 現在のラン全体の set の状態（揃っていればその id、無ければ ""、バラバラなら "__mixed__"）
-  const currentFontSet = (runs) => {
-    let seen = null;
-    for (const run of runs) {
-      const v = run.set ? String(run.set).replace(/^ekasane\.font\./, "") : "";
-      if (seen === null) seen = v;
-      else if (seen !== v) return "__mixed__";
-    }
-    return seen === null ? "" : seen;
-  };
-  const syncFontSetSelect = () => {
-    const v = currentFontSet(extractRuns(area));
-    mixedOpt.hidden = v !== "__mixed__";
-    fsSel.value = v;
+  const mkModeBtn = (label, handler) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sbtn mode-btn";
+    b.textContent = label;
+    b.addEventListener("click", handler);
+    return b;
   };
 
-  const commit = () => {
-    const runs = extractRuns(area);
-    const plainLen = runs.reduce((s, r) => s + (r.text ? r.text.length : 0), 0);
-    const maxLen = typeof def["max-length"] === "number" ? def["max-length"] : 0;
-    if (maxLen > 0 && plainLen > maxLen) {
-      setFieldError(spec.objectId, `最大 ${maxLen} 文字です（現在 ${plainLen} 文字）`);
-      return;
-    }
-    const hasContent = runs.some((r) => r.text !== "" || r.newline);
-    const r = applyValue(spec.objectId, hasContent ? runs : "");
+  // プレーン形式の値を確定する（単一行は文字列、複数行は改行つきラン配列）
+  const commitPlainText = (text) => {
+    const v = def.multiline ? (text === "" ? "" : runsFromPlainText(text)) : text;
+    const r = applyValue(spec.objectId, v);
     if (r.ok) {
       onSetOk();
       if (r.res && r.res.warning) renderWarnings();
     } else {
       setFieldError(spec.objectId, r.res ? errMessage(r.res) : "値を設定できませんでした");
+      refreshControl();
     }
   };
 
-  fsSel.addEventListener("change", () => {
-    const v = fsSel.value;
-    if (v === "__mixed__") return;
-    const runs = extractRuns(area);
-    for (const run of runs) {
-      if (v === "") delete run.set;
-      else run.set = `ekasane.font.${v}`;
+  const renderPlain = () => {
+    actions.textContent = "";
+    actions.append(mkModeBtn("リッチテキスト形式に切り替え", () => { mode = "rich"; renderRich(); }));
+    wrap.textContent = "";
+    let control;
+    if (def.multiline) {
+      control = document.createElement("textarea");
+      control.rows = 4;
+    } else {
+      control = document.createElement("input");
+      control.type = "text";
     }
-    renderRuns(area, normalizeRuns(runs));
-    syncFontSetSelect();
-    commit();
-  });
-
-  const insertTextAtCaret = (text) => {
-    area.focus();
-    let done = false;
-    try { done = document.execCommand("insertText", false, text); } catch { done = false; }
-    if (!done) {
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0) {
-        const range = sel.getRangeAt(0);
-        range.deleteContents();
-        const node = document.createTextNode(text);
-        range.insertNode(node);
-        range.setStartAfter(node);
-        range.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-    }
-    area.dispatchEvent(new Event("input", { bubbles: true }));
+    if (typeof def["max-length"] === "number") control.maxLength = def["max-length"];
+    control.value = plainTextOfValue(G.values.get(spec.objectId));
+    control.addEventListener("change", () => commitPlainText(control.value));
+    wrap.append(control);
+    refreshControl = () => { control.value = plainTextOfValue(G.values.get(spec.objectId)); };
+    fieldControls.set(spec.objectId, { control, errorEl: err, refresh: refreshControl });
   };
 
-  area.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      if (def.multiline) insertTextAtCaret("\n");
-    }
-  });
-  area.addEventListener("paste", (e) => {
-    e.preventDefault();
-    let text = "";
-    try { text = e.clipboardData.getData("text/plain") || ""; } catch { text = ""; }
-    text = text.replace(/\r\n?/g, "\n");
-    if (!def.multiline) text = text.replace(/\n/g, "");
-    if (text) insertTextAtCaret(text);
-  });
-  area.addEventListener("input", () => {
-    clearTimeout(commitTimer);
-    commitTimer = setTimeout(commit, 400);
-  });
-  area.addEventListener("blur", () => {
-    clearTimeout(commitTimer);
-    commit();
-  });
+  const renderRich = () => {
+    actions.textContent = "";
+    const editBtn = mkModeBtn("編集", () => openTextEditor(spec, onSetOk));
+    const toPlainBtn = mkModeBtn("プレーンテキスト形式に切り替え", async () => {
+      const go = await showDialog({
+        title: "プレーンテキスト形式に切り替え",
+        messages: ["装飾（太字・色・フォントセットなど）はすべて消えます。切り替えますか？"],
+        okLabel: "切り替える",
+        cancelLabel: "キャンセル",
+      });
+      if (!go) return;
+      mode = "plain";
+      renderPlain();
+      commitPlainText(plainTextOfValue(G.values.get(spec.objectId)));
+    });
+    actions.append(editBtn, toPlainBtn);
+    wrap.textContent = "";
+    const display = document.createElement("div");
+    display.className = "rich-display" + (def.multiline ? " multiline" : "");
+    renderRuns(display, runsFromValue(G.values.get(spec.objectId)));
+    wrap.append(display);
+    refreshControl = () => renderRuns(display, runsFromValue(G.values.get(spec.objectId)));
+    fieldControls.set(spec.objectId, { control: display, errorEl: err, refresh: refreshControl });
+  };
 
-  renderRuns(area, runsFromValue(G.values.get(spec.objectId)));
-  wrap.append(toolbar, area);
-  syncFontSetSelect();
-  fieldControls.set(spec.objectId, {
-    control: area,
-    errorEl: err,
-    refresh() {
-      renderRuns(area, runsFromValue(G.values.get(spec.objectId)));
-      syncFontSetSelect();
-    },
-  });
+  if (mode === "rich") renderRich(); else renderPlain();
   return wrap;
 }
+
+// ---------------------------------------------------------------- リッチテキスト編集ダイアログ
+// ダイアログ内でのみ contenteditable を使い、装飾は選択範囲のランに適用する。
+// OK で確定（setValue）、キャンセルで破棄する。
+let editorCtx = null;
+let savedEditorSel = null;
+
+// 装飾の適用先になる選択範囲。ツールバー側（サイズ入力など）にフォーカスが移ると
+// 編集エリアの選択が見えなくなるため、最後に記録した選択範囲も候補にする
+function currentEditorSel() {
+  return editorSelection() || savedEditorSel;
+}
+
+function editorTextNodes() {
+  const nodes = [];
+  const walker = document.createTreeWalker(els.editorArea, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = walker.nextNode())) nodes.push(n);
+  return nodes;
+}
+
+function editorSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  if (!els.editorArea.contains(range.startContainer) || !els.editorArea.contains(range.endContainer)) return null;
+  let start = -1;
+  let end = -1;
+  let pos = 0;
+  for (const node of editorTextNodes()) {
+    if (node === range.startContainer) start = pos + range.startOffset;
+    if (node === range.endContainer) end = pos + range.endOffset;
+    pos += node.textContent.length;
+  }
+  if (start < 0 || end < 0) return null;
+  return { start, end };
+}
+
+function restoreEditorSelection(start, end) {
+  const nodes = editorTextNodes();
+  let sNode = null, sOff = 0, eNode = null, eOff = 0;
+  let pos = 0;
+  for (const node of nodes) {
+    const len = node.textContent.length;
+    if (sNode === null && start <= pos + len) { sNode = node; sOff = start - pos; }
+    if (eNode === null && end <= pos + len) { eNode = node; eOff = end - pos; }
+    pos += len;
+  }
+  if (!sNode || !eNode) return;
+  const range = document.createRange();
+  range.setStart(sNode, sOff);
+  range.setEnd(eNode, eOff);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+// 選択範囲にかかるランを分割し、mutator(attrs) で属性を書き換える
+function applyAttrToSelection(mutator) {
+  const sel = currentEditorSel();
+  if (!sel || sel.start === sel.end) return;
+  const runs = extractRuns(els.editorArea);
+  const out = [];
+  let pos = 0;
+  for (const run of runs) {
+    const runText = run.text || "";
+    const runLen = runText.length + (run.newline ? 1 : 0);
+    const rs = pos;
+    const re = pos + runLen;
+    if (re <= sel.start || rs >= sel.end) {
+      out.push(run);
+    } else {
+      const base = pickRunAttrs(run);
+      const tStart = Math.max(0, sel.start - rs);
+      const tEnd = Math.min(runText.length, sel.end - rs);
+      const before = runText.slice(0, tStart);
+      const mid = runText.slice(tStart, tEnd);
+      const after = runText.slice(tEnd);
+      if (before) out.push({ text: before, ...base });
+      if (mid) {
+        const a = { ...base };
+        mutator(a);
+        out.push({ text: mid, ...a });
+      }
+      if (after || run.newline) {
+        const tail = { text: after, ...base };
+        if (run.newline) tail.newline = true;
+        out.push(tail);
+      }
+    }
+    pos = re;
+  }
+  renderRuns(els.editorArea, normalizeRuns(out));
+  els.editorArea.focus();
+  restoreEditorSelection(sel.start, sel.end);
+  savedEditorSel = { start: sel.start, end: sel.end };
+  syncEditorToolbar();
+}
+
+// 選択範囲のラン属性が揃っていればその値、バラバラなら undefined を返す
+function uniformAttrInSelection(key) {
+  const sel = currentEditorSel();
+  if (!sel || sel.start === sel.end) return undefined;
+  const runs = extractRuns(els.editorArea);
+  let pos = 0;
+  let seen;
+  let first = true;
+  for (const run of runs) {
+    const runLen = (run.text || "").length + (run.newline ? 1 : 0);
+    const rs = pos;
+    const re = pos + runLen;
+    if (re > sel.start && rs < sel.end && (run.text || "") !== "") {
+      const v = run[key];
+      if (first) { seen = v; first = false; }
+      else if (JSON.stringify(seen) !== JSON.stringify(v)) return undefined;
+    }
+    pos = re;
+  }
+  return first ? undefined : seen;
+}
+
+function syncEditorToolbar() {
+  const live = editorSelection();
+  if (live && live.start !== live.end) savedEditorSel = live;
+  const italic = uniformAttrInSelection("italic");
+  els.edItalic.classList.toggle("on", italic === true);
+  // 選択範囲のフォント名が揃っていれば、リストにもその指定を表示する
+  // （family は配列で格納されるので、代表として先頭の名前で表示する）
+  const famRaw = uniformAttrInSelection("family");
+  const fam = Array.isArray(famRaw) ? famRaw[0] : famRaw;
+  if (typeof fam === "string" && fam) {
+    ensureFontOption(fam);
+    els.edFontList.value = fam;
+  }
+}
+
+// フォントのリストを作り直す（一番上は「標準」＝font-family を指定しない）
+function setFontListOptions(families) {
+  const current = els.edFontList.value;
+  els.edFontList.textContent = "";
+  const std = document.createElement("option");
+  std.value = "";
+  std.textContent = "標準";
+  els.edFontList.appendChild(std);
+  for (const fam of [...new Set(families)].sort((a, b) => a.localeCompare(b))) {
+    const opt = document.createElement("option");
+    opt.value = fam;
+    opt.textContent = fam;
+    els.edFontList.appendChild(opt);
+  }
+  if (current && [...els.edFontList.options].some((o) => o.value === current)) els.edFontList.value = current;
+}
+
+function ensureFontOption(name) {
+  if (!name) return;
+  if (![...els.edFontList.options].some((o) => o.value === name)) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    els.edFontList.appendChild(opt);
+  }
+}
+
+function insertTextAtCaretInEditor(text) {
+  els.editorArea.focus();
+  let done = false;
+  try { done = document.execCommand("insertText", false, text); } catch { done = false; }
+  if (!done) {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      const node = document.createTextNode(text);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+}
+
+function openTextEditor(spec, onSetOk) {
+  editorCtx = { spec, onSetOk };
+  savedEditorSel = null;
+  els.editorTitle.textContent = `${spec.label} を編集`;
+  els.editorError.textContent = "";
+  // フォントセットの候補（ekasane.font の定義）。先頭は中立のプレースホルダで、
+  // 適用のたびにここへ戻す（同じセットを選び直しても change が発火するように）
+  els.edFontSet.textContent = "";
+  const pickOpt = document.createElement("option");
+  pickOpt.value = "";
+  pickOpt.textContent = "（セットを選ぶ）";
+  els.edFontSet.appendChild(pickOpt);
+  const noneOpt = document.createElement("option");
+  noneOpt.value = "__none__";
+  noneOpt.textContent = "（なし）";
+  els.edFontSet.appendChild(noneOpt);
+  for (const [fid] of (G.ekasane.font || [])) {
+    const opt = document.createElement("option");
+    opt.value = fid;
+    opt.textContent = fid;
+    els.edFontSet.appendChild(opt);
+  }
+  // フォントのリスト：最初は「標準」のみ。ただし現在の値で使われているフォント名は、
+  // 現在の指定が見えなくならないよう最初から入れておく
+  const usedFamilies = [...new Set(runsFromValue(G.values.get(spec.objectId)).flatMap((r) => (Array.isArray(r.family) ? r.family : (r.family ? [r.family] : []))))];
+  setFontListOptions(usedFamilies);
+  els.edFontList.value = "";
+  els.edWeight.value = "";
+  els.edSize.value = "";
+  // Local Font Access API（Chrome 系のみ）：無いブラウザではボタンを無効化する
+  const hasLocalFontApi = typeof window.queryLocalFonts === "function";
+  els.edLocalFont.disabled = !hasLocalFontApi;
+  els.edLocalFont.title = hasLocalFontApi ? "" : "このブラウザでは使えません（Local Font Access API がありません）";
+  renderRuns(els.editorArea, runsFromValue(G.values.get(spec.objectId)));
+  els.editorBackdrop.hidden = false;
+  syncEditorToolbar();
+  els.editorArea.focus();
+}
+
+function closeTextEditor() {
+  els.editorBackdrop.hidden = true;
+  editorCtx = null;
+  savedEditorSel = null;
+}
+
+els.edFontSet.addEventListener("change", () => {
+  const v = els.edFontSet.value;
+  if (v === "") return; // プレースホルダ（選ぶ前の状態）
+  applyAttrToSelection((a) => { if (v === "__none__") delete a.set; else a.set = `ekasane.font.${v}`; });
+  els.edFontSet.value = ""; // 適用後は中立の表示に戻す（同じ値を選び直しても適用が走るように）
+});
+els.edWeight.addEventListener("change", () => {
+  const v = els.edWeight.value;
+  applyAttrToSelection((a) => { if (v) a.weight = Number(v); else delete a.weight; });
+});
+els.edItalic.addEventListener("click", () => {
+  const now = uniformAttrInSelection("italic") === true;
+  applyAttrToSelection((a) => { if (now) delete a.italic; else a.italic = true; });
+});
+els.edSize.addEventListener("change", () => {
+  const v = Number(els.edSize.value);
+  if (!Number.isFinite(v) || v <= 0) return;
+  applyAttrToSelection((a) => { a.size = v; });
+});
+els.edSizeClear.addEventListener("click", () => {
+  els.edSize.value = "";
+  applyAttrToSelection((a) => { delete a.size; });
+});
+els.edFontList.addEventListener("change", () => {
+  const v = els.edFontList.value;
+  // フォーマット仕様で run の family は配列（希望リスト）。選んだ名前1つの配列で格納する
+  applyAttrToSelection((a) => { if (v) a.family = [v]; else delete a.family; });
+});
+// ローカルフォント（Local Font Access API）：許可されたらフォントのリストを
+// この PC で使えるフォントの一覧に切り替える（一番上は「標準」のまま）
+els.edLocalFont.addEventListener("click", async () => {
+  if (typeof window.queryLocalFonts !== "function") return;
+  let fonts;
+  try {
+    fonts = await window.queryLocalFonts();
+  } catch {
+    els.editorError.textContent = "フォントの一覧を取得できませんでした（許可されなかった可能性があります）";
+    return;
+  }
+  const families = [...new Set((fonts || []).map((f) => f && f.family).filter(Boolean))];
+  if (families.length === 0) {
+    els.editorError.textContent = "使えるフォントが見つかりませんでした";
+    return;
+  }
+  els.editorError.textContent = "";
+  // 編集中のランで使われているフォント名は、ローカル一覧に無くてもリストに残す
+  const used = extractRuns(els.editorArea).flatMap((r) => (Array.isArray(r.family) ? r.family : (r.family ? [r.family] : [])));
+  setFontListOptions([...families, ...used]);
+});
+const applyEditorColor = () => {
+  const rgb = els.edColor.value || "#000000";
+  const alpha = Math.round((Number(els.edAlpha.value) / 100) * 255);
+  const hex8 = (rgb + alpha.toString(16).padStart(2, "0")).toUpperCase();
+  applyAttrToSelection((a) => { a.color = hex8; });
+};
+els.edColor.addEventListener("change", applyEditorColor);
+els.edAlpha.addEventListener("change", applyEditorColor);
+els.edAlpha.addEventListener("input", () => { els.edAlphaVal.textContent = `${els.edAlpha.value}%`; });
+els.edColorClear.addEventListener("click", () => {
+  applyAttrToSelection((a) => { delete a.color; });
+});
+els.editorArea.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (editorCtx && editorCtx.spec.def.multiline) insertTextAtCaretInEditor("\n");
+  }
+});
+els.editorArea.addEventListener("paste", (e) => {
+  e.preventDefault();
+  let text = "";
+  try { text = e.clipboardData.getData("text/plain") || ""; } catch { text = ""; }
+  text = text.replace(/\r\n?/g, "\n");
+  if (!(editorCtx && editorCtx.spec.def.multiline)) text = text.replace(/\n/g, "");
+  if (text) insertTextAtCaretInEditor(text);
+});
+document.addEventListener("selectionchange", () => {
+  if (editorCtx) syncEditorToolbar();
+});
+els.editorCancel.addEventListener("click", () => closeTextEditor());
+els.editorOk.addEventListener("click", () => {
+  if (!editorCtx) return;
+  const { spec, onSetOk } = editorCtx;
+  const runs = extractRuns(els.editorArea);
+  const plainLen = runs.reduce((s, r) => s + (r.text ? r.text.length : 0), 0);
+  const maxLen = typeof spec.def["max-length"] === "number" ? spec.def["max-length"] : 0;
+  if (maxLen > 0 && plainLen > maxLen) {
+    els.editorError.textContent = `最大 ${maxLen} 文字です（現在 ${plainLen} 文字）`;
+    return;
+  }
+  const hasContent = runs.some((r) => r.text !== "" || r.newline);
+  const r = applyValue(spec.objectId, hasContent ? runs : "");
+  if (!r.ok) {
+    els.editorError.textContent = r.res ? errMessage(r.res) : "値を設定できませんでした";
+    return;
+  }
+  onSetOk();
+  if (r.res && r.res.warning) renderWarnings();
+  closeTextEditor();
+  const fc = fieldControls.get(spec.objectId);
+  if (fc && fc.refresh) fc.refresh();
+});
