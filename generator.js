@@ -26,6 +26,7 @@ const G = {
   renderer: null,
   inputSpecs: [],
   userImages: new Map(),   // object ID -> Blob（現テンプレート分）
+  userImageNames: new Map(), // object ID -> 持ち込み画像の表示名（ファイル名。復元時は保存名か代替表示）
   values: new Map(),       // object ID -> 最後に setValue が成功した値
   seenTemplateIds: new Map(),
   warnings: [],
@@ -408,6 +409,7 @@ async function loadTemplate(folder) {
     G.ekasane = ekasane;
     G.currentFolder = folder;
     G.userImages = new Map();
+    G.userImageNames = new Map();
     G.values = new Map();
 
     const cid = ekasane.common && ekasane.common.id;
@@ -754,6 +756,8 @@ function buildField(spec) {
     const row = document.createElement("div");
     row.className = "inline";
     let fileInput = null;
+    let nameLabel = null;
+    let clearBtn = null;
     if (spec.localFile) {
       fileInput = document.createElement("input");
       fileInput.type = "file";
@@ -765,7 +769,25 @@ function buildField(spec) {
       btn.className = "sbtn";
       btn.textContent = "ファイルを選ぶ";
       btn.addEventListener("click", () => fileInput.click());
-      row.append(btn, fileInput);
+      nameLabel = document.createElement("span");
+      nameLabel.className = "file-name";
+      clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.className = "sbtn";
+      clearBtn.textContent = "解除";
+      clearBtn.addEventListener("click", () => {
+        // ローカルファイルの選択を外し、同梱素材側の状態（初期値）に戻す
+        G.userImages.delete(spec.objectId);
+        G.userImageNames.delete(spec.objectId);
+        if (fileInput) fileInput.value = "";
+        const v = initialValueOf(spec);
+        if (v !== undefined) {
+          const r = applyValue(spec.objectId, v);
+          if (r.ok) onSetOk(); else onSetFail(r.res);
+        }
+        refreshImageField();
+      });
+      row.append(btn, fileInput, nameLabel, clearBtn);
     }
     const thumbs = new Map();
     for (const cand of spec.candidates || []) {
@@ -775,8 +797,9 @@ function buildField(spec) {
       img.title = String(cand);
       img.addEventListener("click", () => {
         G.userImages.delete(spec.objectId);
+        G.userImageNames.delete(spec.objectId);
         const r = applyValue(spec.objectId, cand);
-        if (r.ok) { onSetOk(); markSelected(); } else onSetFail(r.res);
+        if (r.ok) { onSetOk(); refreshImageField(); } else onSetFail(r.res);
       });
       thumbs.set(cand, img);
       row.append(img);
@@ -791,9 +814,18 @@ function buildField(spec) {
       const v = G.values.get(spec.objectId);
       for (const [cand, img] of thumbs) img.classList.toggle("selected", v === cand);
     };
-    markSelected();
+    // サムネイルの選択表示に加え、持ち込み画像の選択状態（ファイル名と解除ボタン）を更新する
+    const refreshImageField = () => {
+      markSelected();
+      if (nameLabel) {
+        const active = userImageActive(spec.objectId);
+        nameLabel.textContent = active ? (G.userImageNames.get(spec.objectId) || "選択済み") : "";
+        clearBtn.hidden = !active;
+      }
+    };
+    refreshImageField();
     div.append(row);
-    fieldControls.set(spec.objectId, { control: fileInput, errorEl: err, refresh: markSelected });
+    fieldControls.set(spec.objectId, { control: fileInput, errorEl: err, refresh: refreshImageField });
     if (fileInput) {
       // ライブラリの bindImageInput でファイル選択を接続する
       G.ekasane.bindImageInput(fileInput, (objectId, file) => { void onUserImageSelected(objectId, file); });
@@ -804,9 +836,16 @@ function buildField(spec) {
   return div;
 }
 
+// 持ち込み画像が、その項目の現在の値として効いているか
+function userImageActive(objectId) {
+  if (!G.userImages.has(objectId) || !G.ekasane) return false;
+  return G.values.get(objectId) === G.ekasane.issueRuntimeId(objectId);
+}
+
 async function onUserImageSelected(objectId, file) {
   if (!file) return;
   G.userImages.set(objectId, file);
+  if (file.name) G.userImageNames.set(objectId, file.name);
   const runtimeId = G.ekasane.issueRuntimeId(objectId);
   try {
     const res = await withTimeout(G.renderer.registerMaterial(runtimeId, file), REGISTER_TIMEOUT_MS);
@@ -1210,12 +1249,15 @@ async function saveInputData() {
   }
   const values = {};
   const images = {};
+  const imageNames = {};
   for (const spec of G.inputSpecs) {
     const v = G.values.get(spec.objectId);
     if (spec.type === "image") {
       const blob = G.userImages.get(spec.objectId);
       if (blob && v === G.ekasane.issueRuntimeId(spec.objectId)) {
         images[spec.objectId] = blob;
+        const nm = G.userImageNames.get(spec.objectId);
+        if (nm) imageNames[spec.objectId] = nm;
         continue;
       }
     }
@@ -1228,6 +1270,7 @@ async function saveInputData() {
     templateTitle: templateNameOf(G.currentFolder),
     values,
     images,
+    imageNames,
   };
   const db = await openDb();
   try {
@@ -1242,6 +1285,7 @@ async function loadInputData(name) {
   if (!record) return;
   // まず初期値に戻す
   G.userImages = new Map();
+  G.userImageNames = new Map();
   G.values = new Map();
   applyInitialValues();
   const specIds = new Set(G.inputSpecs.map((s) => s.objectId));
@@ -1255,6 +1299,9 @@ async function loadInputData(name) {
   }
   for (const [objectId, blob] of Object.entries(record.images || {})) {
     if (!specIds.has(objectId)) continue;
+    // 復元した画像も「選択されている」ことが分かるよう、表示名を持たせる
+    // （保存時にファイル名があればそれ、無ければ代替表示）
+    G.userImageNames.set(objectId, (record.imageNames && record.imageNames[objectId]) || "保存データの画像");
     await onUserImageSelected(objectId, blob);
   }
   buildInputFields();

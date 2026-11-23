@@ -64,6 +64,12 @@
   ],
   "material": [
     {
+      "id": "blank",
+      "label": "10x10透明",
+      "material-type": "image",
+      "path": "blank.png"
+    },
+    {
       "id": "book_y_base",
       "label": "謳（黄ベース）",
       "material-type": "image",
@@ -104,7 +110,39 @@
       "width": 1922,
       "x": 0,
       "y": 0,
-      "z": 4
+      "z": 1
+    },
+    {
+      "id": "utaImgL",
+      "label": "左ページ画像（解像度 610x980）",
+      "material-id": "blank",
+      "type": "image",
+      "value": {
+        "function": [
+          "input", true
+        ]
+      },
+      "height": 980,
+      "width": 610,
+      "x": 264,
+      "y": 42,
+      "z": 2
+    },
+    {
+      "id": "utaImgR",
+      "label": "右ページ画像（解像度 610x980）",
+      "material-id": "blank",
+      "type": "image",
+      "value": {
+        "function": [
+          "input", true
+        ]
+      },
+      "height": 980,
+      "width": 610,
+      "x": 1044,
+      "y": 42,
+      "z": 3
     },
     {
       "font": "uta_white",
